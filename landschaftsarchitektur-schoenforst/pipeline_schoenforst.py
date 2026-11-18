@@ -10,6 +10,10 @@ laedt dafuer automatisch die amtlichen Daten von opengeodata.nrw.de:
   * DGM1-GeoTIFF  -> Mosaik, auf die Abgrenzung zugeschnitten
 und laedt das Ergebnis in das aktuelle QGIS-Projekt.
 
+Optional (NUTZUNGEN_SHP / OSM_LINIEN_SHP gesetzt):
+  * Nutzungen-SHP  -> je Nutzungsart (Spalte "bez") eine eigene SHP
+  * OSM-Linien-SHP -> Fuss-/Radwegenetz (highway = footway, path, ...)
+
 Ausfuehren:  Erweiterungen -> Python-Konsole -> dieses Skript oeffnen und
 ausfuehren (oder Inhalt einfuegen). Internetzugang wird benoetigt.
 
@@ -50,6 +54,23 @@ DGM_MODE = "polygon"
 # Sicherheitsbremse: bei sehr grossen Gebieten abbrechen (Kachelanzahl).
 MAX_TILES = 60
 
+# Optionale Vorverarbeitung (leer = Schritt wird uebersprungen):
+#   NUTZUNGEN_SHP  -> je Wert der Spalte NUTZUNG_FELD eine eigene SHP
+#   OSM_LINIEN_SHP -> Fuss-/Radwegenetz anhand der OSM-Spalte "highway"
+NUTZUNGEN_SHP  = os.environ.get("NUTZUNGEN_SHP", r"")
+NUTZUNG_FELD   = "bez"
+OSM_LINIEN_SHP = os.environ.get("OSM_LINIEN_SHP", r"")
+WEGE_KATEGORIEN = {
+    "footway",     # reine Fusswege
+    "path",        # Pfade (Wald, Parks)
+    "steps",       # Treppen
+    "track",       # Wirtschafts-/Forstwege
+    "cycleway",    # Radwege
+    "pedestrian",  # Fussgaengerzonen
+    "bridleway",   # Reitwege
+    "corridor",    # Gebaeudedurchgaenge
+}
+
 # NRW-Open-Data-Verzeichnisse (Einzelkacheln)
 LOD2_DIR = "https://www.opengeodata.nrw.de/produkte/geobasis/3dg/lod2_gml/lod2_gml/"
 DGM_DIR  = "https://www.opengeodata.nrw.de/produkte/geobasis/hm/dgm1_tiff/dgm1_tiff/"
@@ -64,6 +85,8 @@ DIR_GPKG  = os.path.join(WORKDIR, "gpkg")
 MERGED    = os.path.join(WORKDIR, "gebaeude_gesamt.gpkg")
 DGM_OUT   = os.path.join(WORKDIR, "dgm_mosaik.tif")
 CUTLINE   = os.path.join(WORKDIR, "abgrenzung_25832.gpkg")
+DIR_NUTZ  = os.path.join(WORKDIR, "aufbereitung", "nutzungsarten")
+WEGE_OUT  = os.path.join(WORKDIR, "aufbereitung", "fuss_und_radwege.shp")
 
 for d in (DIR_LOD2, DIR_DGM, DIR_GPKG):
     os.makedirs(d, exist_ok=True)
@@ -122,6 +145,74 @@ def add_vector(gpkg, layername, display):
         print(f"   + Layer geladen: {display} ({lyr.featureCount()} Objekte)")
     else:
         print(f"   ! Layer ungueltig: {display}")
+
+def field_text(feat, field):
+    v = feat.GetField(field)
+    return "" if v is None else str(v).strip()
+
+def copy_features(src_layer, dst_path, keep):
+    """Schreibt alle Objekte aus src_layer, fuer die keep(feature) True
+    liefert, als neue SHP nach dst_path. Gibt die Anzahl zurueck."""
+    drv = ogr.GetDriverByName("ESRI Shapefile")
+    if os.path.exists(dst_path):
+        drv.DeleteDataSource(dst_path)
+    dst = drv.CreateDataSource(dst_path)
+    if dst is None:
+        raise Exception(f"Kann {dst_path} nicht schreiben - Datei noch "
+                        "geoeffnet (z. B. als Layer in QGIS)? Layer entfernen.")
+    name = os.path.splitext(os.path.basename(dst_path))[0]
+    lyr = dst.CreateLayer(name, src_layer.GetSpatialRef(),
+                          src_layer.GetGeomType(), options=["ENCODING=UTF-8"])
+    defn = src_layer.GetLayerDefn()
+    for i in range(defn.GetFieldCount()):
+        lyr.CreateField(defn.GetFieldDefn(i))
+    n = 0
+    src_layer.ResetReading()
+    for feat in src_layer:
+        if keep(feat):
+            out = ogr.Feature(lyr.GetLayerDefn())
+            out.SetFrom(feat)
+            lyr.CreateFeature(out)
+            n += 1
+    dst = None
+    return n
+
+def open_layer(path):
+    ds = ogr.Open(path)
+    if ds is None:
+        raise Exception(f"Datei nicht lesbar: {path}")
+    return ds, ds.GetLayer()
+
+def split_by_field(src_path, field, out_dir):
+    """Je Wert von `field` eine eigene SHP in out_dir (Nutzungsarten)."""
+    ds, lyr = open_layer(src_path)
+    if lyr.GetLayerDefn().GetFieldIndex(field) < 0:
+        print(f"   ! Spalte '{field}' fehlt in {src_path} - uebersprungen")
+        return []
+    os.makedirs(out_dir, exist_ok=True)
+    lyr.ResetReading()
+    werte = sorted({field_text(f, field) for f in lyr} - {""})
+    print(f"   {len(werte)} Nutzungsarten in {os.path.basename(src_path)}")
+    out = []
+    for w in werte:
+        safe = re.sub(r"[^a-zA-Z0-9äöüÄÖÜß]", "_", w).strip("_") or "ohne_namen"
+        path = os.path.join(out_dir, safe + ".shp")
+        n = copy_features(lyr, path, lambda f, w=w: field_text(f, field) == w)
+        print(f"   -> {safe}.shp ({n} Objekte)")
+        out.append(path)
+    return out
+
+def filter_wege(src_path, dst_path, kategorien):
+    """Fuss-/Radwegenetz aus OSM-Linien (Spalte highway) nach dst_path."""
+    ds, lyr = open_layer(src_path)
+    if lyr.GetLayerDefn().GetFieldIndex("highway") < 0:
+        print(f"   ! Spalte 'highway' fehlt in {src_path} - uebersprungen")
+        return None
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    n = copy_features(lyr, dst_path,
+                      lambda f: field_text(f, "highway").lower() in kategorien)
+    print(f"   -> {os.path.basename(dst_path)} ({n} Wege)")
+    return dst_path
 
 # ============================================================
 # 3. EXTENT DER ABGRENZUNG -> 25832 -> KACHELLISTE
@@ -287,9 +378,25 @@ else:
     print("   Keine DGM-Kacheln geladen.")
 
 # ============================================================
+# 7b. OPTIONALE VORVERARBEITUNG: NUTZUNGSARTEN, FUSS-/RADWEGE
+# ============================================================
+wege_shp = None
+if NUTZUNGEN_SHP:
+    print("\n--- Nutzungsarten ---")
+    split_by_field(NUTZUNGEN_SHP, NUTZUNG_FELD, DIR_NUTZ)
+if OSM_LINIEN_SHP:
+    print("\n--- Fuss-/Radwege ---")
+    wege_shp = filter_wege(OSM_LINIEN_SHP, WEGE_OUT, WEGE_KATEGORIEN)
+
+# ============================================================
 # 8. ERGEBNIS IN QGIS LADEN
 # ============================================================
 print("\n--- In QGIS laden ---")
+if wege_shp:
+    w = QgsVectorLayer(wege_shp, "Fuss- und Radwege", "ogr")
+    if w.isValid():
+        QgsProject.instance().addMapLayer(w)
+        print("   + Fuss- und Radwege geladen")
 if os.path.exists(DGM_OUT):
     r = QgsRasterLayer(DGM_OUT, "DGM1 (Abgrenzung)")
     if r.isValid():
