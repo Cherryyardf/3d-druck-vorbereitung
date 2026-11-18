@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-obj_solidify_scale_pack.py
+obj_printprep_EXAKT_1zu1000_FAST.py
 
 Kompletter 3D-Druck-Workflow fuer eine Vectorworks-OBJ:
 
@@ -29,16 +29,17 @@ OBJ kennt keinen CAD-"Solid"-Datentyp. Die Ausgabe sind geschlossene /
 watertight Dreiecksmeshes. Fuer STL/3D-Druck ist das der relevante Zustand.
 
 INSTALLATION EINMALIG:
-    python -m pip install --user trimesh numpy scipy scikit-image matplotlib
+    python -m pip install trimesh numpy scipy scikit-image matplotlib
+    (am besten in einem projektlokalen venv)
 
 BEISPIEL, wenn die OBJ-Zahlen MILLIMETER sind:
-    python obj_solidify_scale_pack.py "FürModell.obj" --input-unit mm --scale 0.05
+    python obj_printprep_EXAKT_1zu1000_FAST.py "FürModell.obj" --input-unit mm --scale 0.05
 
 BEISPIEL, wenn die OBJ-Zahlen METER sind:
-    python obj_solidify_scale_pack.py "FürModell.obj" --input-unit m --scale 0.001
+    python obj_printprep_EXAKT_1zu1000_FAST.py "FürModell.obj" --input-unit m --scale 0.001
 
 Nur analysieren, ohne Geometrie zu schreiben:
-    python obj_solidify_scale_pack.py "FürModell.obj" --input-unit mm --scale 0.05 --analyze-only
+    python obj_printprep_EXAKT_1zu1000_FAST.py "FürModell.obj" --input-unit mm --scale 0.05 --analyze-only
 """
 
 from pathlib import Path
@@ -60,7 +61,7 @@ except ImportError:
     raise SystemExit(
         "\nBenötigte Pakete fehlen.\n"
         "Einmalig ausführen:\n\n"
-        "python -m pip install --user trimesh numpy scipy scikit-image matplotlib\n"
+        "python -m pip install trimesh numpy scipy scikit-image matplotlib\n"
     )
 
 
