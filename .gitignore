@@ -1,0 +1,4 @@
+.venv/
+__pycache__/
+*_PRINT_READY/
+3d_lod2_dgm/
